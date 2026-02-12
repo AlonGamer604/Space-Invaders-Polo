@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Space Invaders: Jorge - El Destino Final</title>
+<style>
+    body { margin: 0; overflow: hidden; background-color: #000; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: 'Courier New', Courier, monospace; color: #fff; }
+    #gameCanvas { border: 2px solid #0f0; background: radial-gradient(circle, #050505 0%, #000 100%); display: block; }
+
+    .screen {
+        position: absolute; width: 800px; height: 600px;
+        background-color: rgba(0, 0, 0, 0.9);
+        display: flex; flex-direction: column; justify-content: center; align-items: center;
+        text-align: center; z-index: 100;
+    }
+
+    h1 { color: #0f0; font-size: 45px; text-shadow: 0 0 15px #0f0; }
+    button {
+        background: transparent; color: #0f0; border: 2px solid #0f0;
+        padding: 12px 35px; font-size: 20px; cursor: pointer; transition: 0.3s;
+    }
+    button:hover { background: #0f0; color: #000; box-shadow: 0 0 25px #0f0; }
+
+    .ui-text { position: absolute; color: #0f0; font-size: 20px; pointer-events: none; font-weight: bold; }
+    #scoreDisplay { top: 20px; left: 20px; }
+    #levelDisplay { top: 20px; right: 20px; }
+    #livesDisplay { bottom: 20px; left: 20px; }
+    #shieldDisplay { bottom: 20px; right: 20px; color: #0cf; display: none; }
+    
+    #boss-ui { position: absolute; top: 60px; width: 450px; display: none; text-align: center; }
+    #boss-bar { width: 100%; height: 15px; background: #222; border: 1px solid #f00; }
+    #hp-fill { width: 100%; height: 100%; background: #f00; transition: width 0.1s; }
+    .hidden { display: none !important; }
+
+    .win-anim { animation: flash 0.5s infinite; }
+    @keyframes flash { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+
+<audio id="bgMusic" loop src="musica.mp3"></audio>
+
+<div id="scoreDisplay" class="ui-text">SCORE: 0</div>
+<div id="levelDisplay" class="ui-text">NIVEL: 1</div>
+<div id="livesDisplay" class="ui-text">VIDAS: 5</div>
+<div id="shieldDisplay" class="ui-text">ESCUDO: ACTIVO</div>
+
+<div id="boss-ui">
+    <div style="color: #f00; font-weight: bold; font-size: 14px; margin-bottom: 5px;">EL CENTINELA</div>
+    <div id="boss-bar"><div id="hp-fill"></div></div>
+</div>
+
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+
+<div id="startScreen" class="screen">
+    <h1>INVADERS: JORGE</h1>
+    <p style="color: #0f0;">Inicias con 5 vidas. ¡Sube el volumen y lucha!</p>
+    <button onclick="startGame()">INICIAR MISIÓN</button>
+</div>
+
+<div id="gameOverScreen" class="screen hidden">
+    <h1 style="color: #f00;">MISIÓN FALLIDA</h1>
+    <p>La Tierra ha caído...</p>
+    <button onclick="startGame()">REINTENTAR</button>
+</div>
+
+<div id="winScreen" class="screen hidden">
+    <h1 class="win-anim">¡VICTORIA TOTAL!</h1>
+    <p style="font-size: 18px; color: #ff0;">Jorge, has destruido al Centinela.</p>
+    <p>La galaxia vuelve a estar en paz gracias a tu valentía.</p>
+    <h2 id="finalScore" style="color: #0f0;"></h2>
+    <button onclick="startGame()">VOLVER AL INICIO</button>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const music = document.getElementById('bgMusic');
+
+let score, level, lives, gameActive, enemies, playerBullets, enemyBullets, boss, bossAttackCount, powerUps, bossAttackTimer;
+let player = { x: 380, y: 540, w: 40, h: 25, dx: 0, shield: false };
+
+// --- FUNCIÓN DE EFECTOS DE SONIDO SINTETIZADOS ---
+function playSFX(freq, type, duration, vol = 0.1) {
+    try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+    } catch(e) { console.log("Audio no soportado"); }
+}
+
+function startGame() {
+    // REPRODUCIR MÚSICA
+    music.volume = 0.3;
+    music.currentTime = 0;
+    music.play().catch(e => console.log("Esperando interacción para audio"));
+
+    document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+    document.getElementById('boss-ui').style.display = 'none';
+    score = 0; level = 1; 
+    lives = 5; 
+    gameActive = true;
+    enemies = []; playerBullets = []; enemyBullets = []; powerUps = [];
+    boss = null; bossAttackCount = 0; player.shield = false; bossAttackTimer = 0;
+    updateUI(); spawnEnemies(); animate();
+}
+
+function updateUI() {
+    document.getElementById('scoreDisplay').innerText = `SCORE: ${score}`;
+    document.getElementById('levelDisplay').innerText = (level > 3) ? `NIVEL: FINAL` : `NIVEL: ${level}`;
+    document.getElementById('livesDisplay').innerText = `VIDAS: ${lives}`;
+    document.getElementById('shieldDisplay').style.display = player.shield ? 'block' : 'none';
+}
+
+function spawnEnemies() {
+    enemies = [];
+    const rows = level + 1; 
+    const cols = 7;
+    const speed = 0.7 + (level * 0.4); 
+    for(let r=0; r<rows; r++) {
+        for(let c=0; c<cols; c++) {
+            enemies.push({ x: 80 + c*90, y: 60 + r*45, w: 35, h: 25, dx: speed, color: level === 1 ? "#0f0" : (level === 2 ? "#ff0" : "#0cf") });
+        }
+    }
+}
+
+function spawnBoss() {
+    boss = { x: 350, y: 70, w: 120, h: 70, hp: 800, maxHp: 800, dx: 3 };
+    document.getElementById('boss-ui').style.display = 'block';
+    document.getElementById('hp-fill').style.width = '100%';
+    updateUI();
+}
+
+function animate() {
+    if(!gameActive) {
+        music.pause();
+        return;
+    }
+    ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
+    ctx.fillRect(0, 0, 800, 600);
+
+    player.x += player.dx;
+    player.x = Math.max(0, Math.min(760, player.x));
+    
+    ctx.fillStyle = player.shield ? "#0cf" : "#fff";
+    ctx.fillRect(player.x, player.y, player.w, player.h);
+    if(player.shield) {
+        ctx.strokeStyle = "#0cf";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(player.x - 5, player.y - 5, player.w + 10, player.h + 10);
+    }
+
+    // Power-ups
+    powerUps.forEach((p, i) => {
+        p.y += 3;
+        ctx.fillStyle = p.type === 'life' ? "#0f0" : "#0cf";
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+        if(p.x < player.x + player.w && p.x + p.w > player.x && p.y < player.y + player.h && p.y + p.h > player.y) {
+            playSFX(600, 'sine', 0.3); // Sonido recoger item
+            if(p.type === 'life') {
+                lives++; 
+            }
+            if(p.type === 'shield') { 
+                player.shield = true; 
+                setTimeout(() => { player.shield = false; updateUI(); }, 6000); 
+            }
+            powerUps.splice(i, 1); 
+            updateUI();
+        }
+        if(p.y > 600) powerUps.splice(i, 1);
+    });
+
+    playerBullets.forEach((b, i) => {
+        b.y -= 10;
+        ctx.fillStyle = "#ff0";
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        if(b.y < 0) playerBullets.splice(i, 1);
+    });
+
+    enemies.forEach((en, i) => {
+        en.x += en.dx;
+        if(en.x > 760 || en.x < 0) en.dx *= -1, en.y += 20;
+        ctx.fillStyle = en.color;
+        ctx.fillRect(en.x, en.y, en.w, en.h);
+
+        if(Math.random() < 0.005 + (level * 0.002)) {
+            enemyBullets.push({ x: en.x + en.w/2, y: en.y + en.h, w: 4, h: 10, dy: 3 + level, dx: 0 });
+        }
+
+        playerBullets.forEach((b, bi) => {
+            if(b.x < en.x + en.w && b.x + b.w > en.x && b.y < en.y + en.h && b.y + b.h > en.y) {
+                playSFX(100, 'sawtooth', 0.1); // Sonido explosión enemigo
+                if(Math.random() < 0.15) powerUps.push({ x: en.x, y: en.y, w: 20, h: 20, type: Math.random() < 0.5 ? 'life' : 'shield' });
+                enemies.splice(i, 1); playerBullets.splice(bi, 1);
+                score += 50 * level; updateUI();
+            }
+        });
+    });
+
+    if(boss) {
+        boss.x += boss.dx;
+        if(boss.x > 680 || boss.x < 0) boss.dx *= -1;
+        let redIntensity = Math.floor(255 * (1 - boss.hp / boss.maxHp));
+        ctx.fillStyle = `rgb(255, ${255 - redIntensity}, ${255 - redIntensity})`;
+        ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+
+        bossAttackTimer++;
+        if(bossAttackTimer > 50) {
+            let randAttack = Math.random();
+            if(randAttack < 0.5) enemyBullets.push({ x: boss.x + boss.w/2, y: boss.y + boss.h, w: 6, h: 15, dy: 6, dx: 0 });
+            else if(randAttack < 0.8) {
+                for(let j = -1; j <= 1; j++) enemyBullets.push({ x: boss.x + boss.w/2, y: boss.y + boss.h, w: 6, h: 12, dy: 5, dx: j * 2 });
+            } else enemyBullets.push({ x: boss.x + boss.w/2 - 15, y: boss.y + boss.h, w: 30, h: 30, dy: 4, dx: 0, special: true });
+            bossAttackTimer = 0;
+        }
+
+        playerBullets.forEach((b, bi) => {
+            if(b.x < boss.x + boss.w && b.x + b.w > boss.x && b.y < boss.y + boss.h && b.y + b.h > boss.y) {
+                playSFX(150, 'sawtooth', 0.1, 0.05);
+                boss.hp -= 10; playerBullets.splice(bi, 1);
+                document.getElementById('hp-fill').style.width = (boss.hp/boss.maxHp*100) + "%";
+                if(boss.hp <= 0) { 
+                    gameActive = false; 
+                    document.getElementById('finalScore').innerText = "SCORE FINAL: " + score;
+                    document.getElementById('winScreen').classList.remove('hidden'); 
+                }
+            }
+        });
+    } else if(enemies.length === 0) {
+        if(level < 3) { level++; spawnEnemies(); updateUI(); } else spawnBoss();
+    }
+
+    enemyBullets.forEach((eb, i) => {
+        eb.y += eb.dy; if(eb.dx) eb.x += eb.dx; 
+        ctx.fillStyle = eb.special ? "#f0f" : "#f44"; 
+        ctx.fillRect(eb.x, eb.y, eb.w, eb.h);
+        if(eb.x < player.x + player.w && eb.x + eb.w > player.x && eb.y < player.y + player.h && eb.y + eb.h > player.y) {
+            if(!player.shield) { 
+                playSFX(50, 'square', 0.4, 0.2); // Sonido daño Jorge
+                lives--; updateUI(); 
+                if(lives <= 0) { gameActive = false; document.getElementById('gameOverScreen').classList.remove('hidden'); }
+            }
+            enemyBullets.splice(i, 1);
+        }
+        if(eb.y > 600 || eb.x < 0 || eb.x > 800) enemyBullets.splice(i, 1);
+    });
+
+    requestAnimationFrame(animate);
+}
+
+document.onkeydown = (e) => {
+    if(e.key === "ArrowLeft") player.dx = -7;
+    if(e.key === "ArrowRight") player.dx = 7;
+    if(e.key === " ") {
+        if(playerBullets.length < 6) {
+            playSFX(400, 'square', 0.1); // Sonido disparo Jorge
+            playerBullets.push({ x: player.x + 18, y: player.y, w: 4, h: 12 });
+        }
+    }
+};
+document.onkeyup = () => player.dx = 0;
+</script>
+</body>
+</html>
